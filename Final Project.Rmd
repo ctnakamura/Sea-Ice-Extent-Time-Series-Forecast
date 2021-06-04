@@ -1,0 +1,112 @@
+---
+title: "Sea Ice Extent"
+author: "Chris Nakamura"
+date: "November 29, 2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(forecast)
+library(tseries)
+library(TSA)
+library(vars)
+```
+
+Data Prep
+
+```{r data}
+data <- read.csv("C:\\Users\\cnaka\\Class Notes\\31006 Time Series Analysis\\seaice.csv")
+data<-data[data["Hemisphere"]=="north"]
+aggdata<-aggregate(x=data$Extent,by=list(data$Year,data$Month),FUN="mean")
+colnames(aggdata)<-c("Year","Month","Extent")
+aggdata<-aggdata[order(aggdata$Year,aggdata$Month),]
+tsdata<-ts(aggdata[,3],frequency=12,start=c(1978,10))
+tsdata_train<-ts(tsdata[1:(length(tsdata)-12)],frequency=12,start=c(1978,10))
+tsdata_test<-ts(tsdata[(length(tsdata)-11):length(tsdata)],frequency=12,start=c(2018,6))
+tsdisplay(tsdata)
+sdiff<-diff(tsdata,lag=12)
+tsdisplay(sdiff,main="Seasonally Differenced Extent")
+sdiff_train<-ts(sdiff[1:(length(sdiff)-11)],frequency=12,start=c(1978,10))
+sdiff_test<-ts(sdiff[(length(sdiff)-11):length(sdiff)],frequency=12,start=c(2018,7))
+
+```
+
+Stationarity Test
+
+```{r stationarity}
+adf.test(sdiff)
+kpss.test(sdiff)
+```
+The seasonally differenced data tests as stationary.
+
+ARIMA Modeling
+```{r ARIMA}
+Arima(tsdata_train,c(1,0,0),c(0,1,0),include.drift = TRUE)
+Arima(tsdata_train,c(1,0,0),c(1,1,0),include.drift = TRUE)
+Arima(tsdata_train,c(1,0,0),c(0,1,1),include.drift = TRUE)
+Arima(tsdata_train,c(1,0,0),c(1,1,1),include.drift = TRUE)
+Arima(tsdata_train,c(1,0,0),c(2,1,0),include.drift = TRUE)
+Arima(tsdata_train,c(1,0,0),c(0,1,2),include.drift = TRUE)
+Arima(tsdata_train,c(1,0,0),c(2,1,1),include.drift = TRUE)
+Arima(tsdata_train,c(1,0,0),c(1,1,2),include.drift = TRUE)
+Arima(tsdata_train,c(1,0,0),c(2,1,2),include.drift = TRUE)
+checkresiduals(Arima(tsdata_train,c(2,0,0),c(0,1,2),include.drift = TRUE))
+aamodel<-Arima(tsdata_train,c(2,0,0),c(0,1,2),include.drift = TRUE)
+plot(forecast(aamodel,h=12))
+#lines(tsdata_test,col="red")
+plot(forecast(aamodel,h=12)$mean,ylim=c(5,15),ylab="Ice Extent")
+title("ARIMA Fcst vs Test")
+lines(tsdata_test,col="red")
+legend("bottomleft",legend=c("Forecast","Actuals"),text.col=c("black","red"))
+MAPE<-sum(abs((forecast(aamodel,h=12)$mean-tsdata_test))/tsdata_test)/12
+MAPE
+```
+
+Box-Cox Transformation?
+
+The data does not appear to require a box cox transformation, but we will perform one and see which model performs better.
+```{r boxcox}
+BoxCox.lambda(sdiff)
+bcdata<-BoxCox(sdiff,lambda=.8251833)
+bcdata_train<-ts(bcdata[1:(length(bcdata)-11)],frequency=12,start=c(1979,10))
+bcdata_test<-ts(bcdata[(length(bcdata)-11):length(bcdata)],frequency=12,start=c(2018,6))
+tsdisplay(ts(bcdata,frequency=12,start=c(1979,10)))
+aamodel2<-auto.arima(bcdata_train)
+aamodel2
+plot(forecast(aamodel2,h=12))
+lines(bcdata_test,col="red")
+plot(forecast(aamodel2,h=12)$mean)
+lines(bcdata_test,col="red")
+MAPE2<-sum(abs((forecast(aamodel2,h=12)$mean-bcdata_test))/bcdata_test)/12
+MAPE2
+```
+The model using box-cox adjusted data generalizes significantly worse than the original model.
+
+Cross-Validation
+```{r}
+k <- 240 # minimum data length for fitting a model
+n <- length(tsdata) # Number of data points
+p <- 12 ### Period
+H <- 12 # Forecast Horiz
+defaultW <- getOption("warn") 
+options(warn = -1)
+
+st <- tsp(tsdata)[1]+(k-2)/p #  gives the start time in time units,
+aicc <- array(NA,n-k)
+mape <- array(NA,n-k)
+for(i in 1:(n-k))
+{
+  train_2 <- window(tsdata, start=st+(i-k+1)/p, end=st+i/p) ## Window Length: k
+  test <- window(tsdata, start=st + (i+1)/p, end=st + (i+H)/p) ## Window Length: H
+  fit <- Arima(train_2, order=c(1,0,0), seasonal=list(order=c(0,1,1), period=p),
+                 include.drift=TRUE, method="ML")
+  fcast <- forecast(fit, h=H)
+  aicc[i]<-fit$aicc
+  mape[i]<-sum(abs((fcast[['mean']]-test)/test))/length(test)
+}
+plot(mape)
+title("Sliding Window CV - MAPE")
+plot(aicc)
+title("Cross Validation AICc")
+```
